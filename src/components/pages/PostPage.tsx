@@ -1,18 +1,16 @@
 'use client'
 
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/hooks/use-toast'
 import { apiFetch } from '@/lib/api'
 import { useAppStore } from '@/lib/store'
 import {
-  Upload, Send, CheckCircle2, XCircle, Loader2,
-  Instagram, FolderOpen, Video, FileText
+  Upload, Send, CheckCircle2, XCircle, Loader2, RefreshCw,
+  Instagram, FolderOpen, Video, FileText, AlertTriangle, Clock
 } from 'lucide-react'
 
 interface IgAccount {
@@ -35,6 +33,9 @@ interface DriveVideo {
   webContentLink?: string
 }
 
+// Max polling attempts before auto-stopping (30 attempts x 10 sec = 5 min)
+const MAX_POLL_ATTEMPTS = 30
+
 export default function PostPage() {
   const { user } = useAppStore()
   const { toast } = useToast()
@@ -49,15 +50,10 @@ export default function PostPage() {
   const [googleToken, setGoogleToken] = useState('')
   const [publishing, setPublishing] = useState(false)
   const [pollingStatus, setPollingStatus] = useState<string | null>(null)
+  const [pollMessage, setPollMessage] = useState<string | null>(null)
   const [uploadId, setUploadId] = useState<string | null>(null)
+  const [pollCount, setPollCount] = useState(0)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
-
-  useEffect(() => {
-    loadData()
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [])
 
   const loadData = async () => {
     try {
@@ -87,6 +83,13 @@ export default function PostPage() {
   }, [googleToken, toast])
 
   useEffect(() => {
+    loadData()
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
     if (selectedFolder) {
       loadVideos(selectedFolder)
     } else {
@@ -95,11 +98,23 @@ export default function PostPage() {
     }
   }, [selectedFolder, loadVideos])
 
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
   const startPolling = (uId: string) => {
     setUploadId(uId)
     setPollingStatus('processing')
+    setPollMessage(null)
+    setPollCount(0)
+    stopPolling()
 
     pollRef.current = setInterval(async () => {
+      setPollCount(prev => prev + 1)
+
       try {
         const data = await apiFetch('/api/instagram/publish/check', {
           method: 'POST',
@@ -107,21 +122,64 @@ export default function PostPage() {
         })
 
         if (data.status === 'completed') {
+          stopPolling()
           setPollingStatus('completed')
-          if (pollRef.current) clearInterval(pollRef.current)
-          toast({ title: 'Reel Published! 🎉', description: `Instagram Media ID: ${data.instagramMediaId}` })
-        } else if (data.status === 'failed') {
-          setPollingStatus('failed')
-          if (pollRef.current) clearInterval(pollRef.current)
-          toast({ title: 'Publish Failed', description: data.errorMessage || 'Kuch gadbad ho gayi', variant: 'destructive' })
+          setPollMessage(`Instagram Media ID: ${data.instagramMediaId}`)
+          toast({ title: 'Reel Published!', description: `Media ID: ${data.instagramMediaId}` })
+          return
         }
-        // Still processing — continue polling
+
+        if (data.status === 'failed') {
+          stopPolling()
+          setPollingStatus('failed')
+          setPollMessage(data.errorMessage || 'Unknown error')
+          toast({ title: 'Publish Failed', description: data.errorMessage || 'Kuch gadbad ho gayi', variant: 'destructive' })
+          return
+        }
+
+        // Still processing — update message if Instagram gives one
+        if (data.message) setPollMessage(data.message)
+
+        // Max attempts reached — auto stop
+        if (pollCount >= MAX_POLL_ATTEMPTS) {
+          stopPolling()
+          setPollingStatus('failed')
+          setPollMessage('Max 5 minute polling limit reached. "Check Now" button se manually check karo.')
+          toast({ title: 'Polling Stopped', description: '5 minute limit cross ho gayi. Check Now button se try karo.', variant: 'destructive' })
+        }
       } catch (err: any) {
+        stopPolling()
         setPollingStatus('failed')
-        if (pollRef.current) clearInterval(pollRef.current)
+        setPollMessage(err.message)
         toast({ title: 'Error', description: err.message, variant: 'destructive' })
       }
     }, 10000) // Poll every 10 seconds
+  }
+
+  const manualCheck = async () => {
+    if (!uploadId) return
+    setPollingStatus('processing')
+    setPollMessage('Checking status...')
+    try {
+      const data = await apiFetch('/api/instagram/publish/check', {
+        method: 'POST',
+        body: JSON.stringify({ uploadId }),
+      })
+      if (data.status === 'completed') {
+        setPollingStatus('completed')
+        setPollMessage(`Instagram Media ID: ${data.instagramMediaId}`)
+        toast({ title: 'Reel Published!', description: `Media ID: ${data.instagramMediaId}` })
+      } else if (data.status === 'failed') {
+        setPollingStatus('failed')
+        setPollMessage(data.errorMessage || 'Unknown error')
+      } else {
+        setPollingStatus('processing')
+        setPollMessage(data.message || 'Still processing on Instagram side...')
+      }
+    } catch (err: any) {
+      setPollingStatus('failed')
+      setPollMessage(err.message)
+    }
   }
 
   const handlePublish = async () => {
@@ -136,11 +194,14 @@ export default function PostPage() {
 
     setPublishing(true)
     try {
-      // Get the download URL for the video
-      let videoUrl = selectedVideo.webContentLink || selectedVideo.webViewLink
+      // IMPORTANT: Instagram needs a DIRECT downloadable URL, not Google Drive viewer
+      let videoUrl = selectedVideo.webContentLink
       if (!videoUrl) {
+        // Fallback: try export=download
         videoUrl = `https://drive.google.com/uc?export=download&id=${selectedVideo.id}`
       }
+      // If webContentLink has export=download already, use as-is
+      // Instagram will download the video from this URL
 
       const data = await apiFetch('/api/instagram/publish', {
         method: 'POST',
@@ -151,7 +212,7 @@ export default function PostPage() {
         }),
       })
 
-      toast({ title: 'Upload Started!', description: 'Reel processing ho rahi hai Instagram pe...' })
+      toast({ title: 'Upload Started!', description: 'Instagram processing start ho gayi hai...' })
       startPolling(data.uploadId)
     } catch (err: any) {
       toast({ title: 'Publish failed', description: err.message, variant: 'destructive' })
@@ -161,12 +222,21 @@ export default function PostPage() {
   }
 
   const resetForm = () => {
+    stopPolling()
     setPublishing(false)
     setPollingStatus(null)
+    setPollMessage(null)
     setUploadId(null)
+    setPollCount(0)
     setSelectedVideo(null)
     setCaption('')
-    if (pollRef.current) clearInterval(pollRef.current)
+  }
+
+  const formatWaitTime = () => {
+    const seconds = pollCount * 10
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}m ${secs}s`
   }
 
   return (
@@ -184,31 +254,50 @@ export default function PostPage() {
           'border-amber-500/50 bg-amber-500/10'
         }`}>
           <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
                 {pollingStatus === 'completed' ? (
-                  <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                  <CheckCircle2 className="w-6 h-6 text-emerald-400 mt-0.5 shrink-0" />
                 ) : pollingStatus === 'failed' ? (
-                  <XCircle className="w-6 h-6 text-red-400" />
+                  <XCircle className="w-6 h-6 text-red-400 mt-0.5 shrink-0" />
                 ) : (
-                  <Loader2 className="w-6 h-6 text-amber-400 animate-spin" />
+                  <Loader2 className="w-6 h-6 text-amber-400 animate-spin mt-0.5 shrink-0" />
                 )}
-                <div>
+                <div className="space-y-1">
                   <p className="font-medium text-white">
-                    {pollingStatus === 'completed' ? 'Reel Published Successfully! 🎉' :
+                    {pollingStatus === 'completed' ? 'Reel Published Successfully!' :
                      pollingStatus === 'failed' ? 'Publish Failed' :
-                     'Reel is being processed...'}
+                     'Processing on Instagram...'}
                   </p>
                   <p className="text-sm text-zinc-400">
-                    {pollingStatus === 'processing' ? 'Har 10 second mein check ho raha hai status' : `Upload ID: ${uploadId}`}
+                    {pollingStatus === 'processing' && (
+                      <span className="flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5" />
+                        Waiting: {formatWaitTime()} (attempt {pollCount}/{MAX_POLL_ATTEMPTS})
+                      </span>
+                    )}
+                    {pollingStatus !== 'processing' && pollMessage}
                   </p>
+                  {pollingStatus === 'failed' && pollMessage && (
+                    <p className="text-sm text-red-400 bg-red-500/10 rounded px-2 py-1 mt-1">
+                      <AlertTriangle className="w-3.5 h-3.5 inline mr-1" />
+                      {pollMessage}
+                    </p>
+                  )}
                 </div>
               </div>
-              {(pollingStatus === 'completed' || pollingStatus === 'failed') && (
-                <Button onClick={resetForm} variant="outline" className="border-zinc-600 text-zinc-300">
-                  Post Another Reel
-                </Button>
-              )}
+              <div className="flex gap-2 shrink-0">
+                {(pollingStatus === 'failed' || pollingStatus === 'processing') && (
+                  <Button onClick={manualCheck} variant="outline" size="sm" className="border-zinc-600 text-zinc-300">
+                    <RefreshCw className="w-4 h-4 mr-1" /> Check Now
+                  </Button>
+                )}
+                {(pollingStatus === 'completed' || pollingStatus === 'failed') && (
+                  <Button onClick={resetForm} variant="outline" size="sm" className="border-zinc-600 text-zinc-300">
+                    Post Another
+                  </Button>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -349,6 +438,7 @@ export default function PostPage() {
                         </span>
                         <span className="text-zinc-500 text-xs">
                           {video.size ? `${(parseInt(video.size) / (1024 * 1024)).toFixed(1)} MB` : ''}
+                          {!video.webContentLink && ' (No direct link)'}
                         </span>
                       </div>
                     </button>
@@ -392,7 +482,7 @@ export default function PostPage() {
             ) : pollingStatus === 'processing' ? (
               <>
                 <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                Processing...
+                Processing ({formatWaitTime()})
               </>
             ) : (
               <>

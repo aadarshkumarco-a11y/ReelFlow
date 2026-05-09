@@ -18,10 +18,6 @@ export default function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    loadLogs()
-  }, [])
-
   const loadLogs = async () => {
     try {
       const data = await apiFetch('/api/logs?limit=200')
@@ -32,6 +28,10 @@ export default function LogsPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    loadLogs()
+  }, [])
 
   const getLevelBadge = (level: string) => {
     switch (level) {

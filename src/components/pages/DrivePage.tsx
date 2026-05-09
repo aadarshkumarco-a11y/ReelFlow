@@ -41,10 +41,6 @@ export default function DrivePage() {
   const [loadingVideos, setLoadingVideos] = useState(false)
   const { toast } = useToast()
 
-  useEffect(() => {
-    loadFolders()
-  }, [])
-
   const loadFolders = async () => {
     try {
       const data = await apiFetch('/api/drive/folders')
@@ -55,6 +51,10 @@ export default function DrivePage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    loadFolders()
+  }, [])
 
   const handleAddFolder = async (e: React.FormEvent) => {
     e.preventDefault()

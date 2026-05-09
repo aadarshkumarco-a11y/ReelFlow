@@ -28,10 +28,6 @@ export default function InstagramPage() {
   const [refreshingId, setRefreshingId] = useState<string | null>(null)
   const { toast } = useToast()
 
-  useEffect(() => {
-    loadAccounts()
-  }, [])
-
   const loadAccounts = async () => {
     try {
       const data = await apiFetch('/api/instagram/accounts')
@@ -42,6 +38,10 @@ export default function InstagramPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    loadAccounts()
+  }, [])
 
   const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault()

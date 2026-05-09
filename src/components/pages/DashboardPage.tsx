@@ -30,10 +30,6 @@ export default function DashboardPage() {
   const [uploads, setUploads] = useState<Upload[]>([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    loadData()
-  }, [])
-
   const loadData = async () => {
     try {
       const [statsData, uploadsData] = await Promise.all([
@@ -48,6 +44,10 @@ export default function DashboardPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    loadData()
+  }, [])
 
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString('en-IN', {

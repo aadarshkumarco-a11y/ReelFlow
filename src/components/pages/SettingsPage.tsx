@@ -24,10 +24,6 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const { toast } = useToast()
 
-  useEffect(() => {
-    loadSettings()
-  }, [])
-
   const loadSettings = async () => {
     try {
       const data = await apiFetch('/api/settings')
@@ -38,6 +34,10 @@ export default function SettingsPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    loadSettings()
+  }, [])
 
   const handleSave = async () => {
     if (!settings) return
