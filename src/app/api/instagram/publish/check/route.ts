@@ -5,10 +5,12 @@ import { checkUploadStatus, publishReel } from '@/lib/instagram'
 
 // POST /api/instagram/publish/check — Checks status once, publishes if ready
 export async function POST(request: Request) {
+  let uploadId: string | undefined
   try {
     const userData = await getAuthUser(request)
     if (!userData) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    const { uploadId } = await request.json()
+    const body = await request.json()
+    uploadId = body.uploadId
     if (!uploadId) return NextResponse.json({ error: 'Upload ID required' }, { status: 400 })
 
     const upload = await db.upload.findFirst({ where: { id: uploadId, userId: userData.userId } })
@@ -37,10 +39,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ status: 'processing' })
   } catch (error: any) {
-    await db.upload.update({
-      where: { id: uploadId },
-      data: { status: 'failed', errorMessage: error.message },
-    }).catch(() => {})
+    if (uploadId) {
+      await db.upload.update({
+        where: { id: uploadId },
+        data: { status: 'failed', errorMessage: error.message },
+      }).catch(() => {})
+    }
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 }
