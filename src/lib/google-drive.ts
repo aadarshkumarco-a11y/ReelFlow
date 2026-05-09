@@ -38,12 +38,35 @@ export async function exchangeGoogleCode(code: string): Promise<GoogleTokenRespo
 }
 
 export async function validateFolder(folderId: string, accessToken: string): Promise<{ name: string; fileCount: number }> {
+  // Step 1: Verify the folder exists and we have access
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${folderId}?fields=name&access_token=${accessToken}`
+    `https://www.googleapis.com/drive/v3/files/${folderId}?fields=name,id,mimeType&access_token=${accessToken}`
   )
-  if (!res.ok) throw new Error('Folder not found or access denied')
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}))
+    const msg = (errorData as any).error?.message || `HTTP ${res.status}`
+
+    if (res.status === 401) {
+      throw new Error(`Google token expired ya invalid hai. Naya token generate karo — ${msg}`)
+    }
+    if (res.status === 403) {
+      throw new Error(`Is folder pe access nahi hai. Folder ko "Anyone with the link" share karo — ${msg}`)
+    }
+    if (res.status === 404) {
+      throw new Error(`Folder nahi mili. Folder ID check karo — galat ID ho sakti hai. (${msg})`)
+    }
+    throw new Error(`Google Drive error: ${msg}`)
+  }
+
   const folder = await res.json()
 
+  // Verify it's actually a folder (not a file)
+  if (folder.mimeType !== 'application/vnd.google-apps.folder') {
+    throw new Error(`Yeh ek folder nahi hai — yeh "${folder.mimeType}" hai. Folder ID daalo, file ID nahi.`)
+  }
+
+  // Step 2: Count videos in the folder
   const countRes = await fetch(
     `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and mimeType contains 'video/'&fields=files(id,name,size,createdTime)&pageSize=100&access_token=${accessToken}`
   )
@@ -51,10 +74,10 @@ export async function validateFolder(folderId: string, accessToken: string): Pro
   return { name: folder.name, fileCount: countData.files?.length || 0 }
 }
 
-export async function getFolderVideos(folderId: string, accessToken: string, pageToken?: string): Promise<{ files: Array<{ id: string; name: string; size: string; createdTime: string; webViewLink: string }>; nextPageToken?: string }> {
+export async function getFolderVideos(folderId: string, accessToken: string, pageToken?: string): Promise<{ files: Array<{ id: string; name: string; size: string; createdTime: string; webViewLink: string; webContentLink?: string }>; nextPageToken?: string }> {
   const params = new URLSearchParams({
     q: `'${folderId}' in parents and mimeType contains 'video/'`,
-    fields: 'files(id,name,size,createdTime,webViewLink),nextPageToken',
+    fields: 'files(id,name,size,createdTime,webViewLink,webContentLink),nextPageToken',
     pageSize: '20',
     orderBy: 'createdTime desc',
     access_token: accessToken,
@@ -62,7 +85,14 @@ export async function getFolderVideos(folderId: string, accessToken: string, pag
   if (pageToken) params.set('pageToken', pageToken)
 
   const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`)
-  return res.json()
+  const data = await res.json()
+
+  if (!res.ok) {
+    const msg = (data as any).error?.message || 'Google Drive API error'
+    throw new Error(`Videos load nahi ho paye: ${msg}`)
+  }
+
+  return data
 }
 
 export async function getVideoDownloadUrl(fileId: string, accessToken: string): Promise<string> {
